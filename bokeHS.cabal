@@ -1,4 +1,4 @@
-name:                boke-hs
+name:                bokeHS
 
 -- The package version.  See the Haskell package versioning policy (PVP)
 -- for standards guiding when and how versions should be incremented.
@@ -37,8 +37,9 @@ cabal-version:       >=1.10.0
 library
   exposed-modules: Graphics.BokeHS.Serialize
                    Graphics.BokeHS.Models
+                   Graphics.BokeHS.List
   GHC-Options:         -Wall
-  other-modules: Paths_bokehask
+  other-modules: Paths_bokeHS
 
   -- LANGUAGE extensions used by modules in this package.
   -- other-extensions:
@@ -57,6 +58,8 @@ library
                        hashable
 
   -- Directories containing source files.
-  hs-source-dirs:      src
+  hs-source-dirs: src
+
+  -- Base language which the package is written in.
   default-language:    Haskell98
 
