@@ -1,18 +1,25 @@
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE AutoDeriveTypeable #-}
 
 module Graphics.BokeHS.Serialize where
 
 import Data.Text (pack, Text)
 import GHC.Exts (fromList)
+import GHC.Generics
 import Control.Monad.State
 import Data.Aeson
+import qualified Data.Colour.SRGB as C
 import qualified Data.HashMap.Lazy as HML
 import qualified Data.ByteString.Lazy as BS
 import qualified Data.ByteString.Lazy.Char8 as CS
 import Data.Aeson.Encode.Pretty (encodePretty)
+
 import Graphics.BokeHS.Models
+import Graphics.BokeHS.GlyphConfig
+import Graphics.BokeHS.Prim
 import Paths_bokeHS
 
 bokehVersion :: Text
@@ -23,6 +30,9 @@ mergeAeson = Object . HML.unions . map (\(Object o) -> o)
 
 l2o :: [(Text, Value)] -> Value
 l2o = Object . fromList
+
+newtype BNode = BNode Value deriving (Show, Generic)
+instance ToJSON BNode 
 
 --holds serialization state
 data SerialEnv = SerialEnv {
@@ -90,14 +100,12 @@ instance (Bokeh a) => Bokeh (Auto a) where
     Auto -> pure $ String "auto"
     NotAuto o -> serializeNode o
 
-instance Bokeh Color where
-    makePrim color = toJSON colorString
-        where
-            colorString :: Text
-            colorString = case color of
-                Purple -> "purple"
-                White -> "white"
-                Lavender -> "lavender"
+--is equal to Models.Color
+instance Bokeh (C.Colour Double) where
+    makePrim = toJSON .  C.sRGB24show
+
+instance Bokeh Angle where
+    makePrim (Angle a) = toJSON a
 
 instance Bokeh Title where
     serializeNode (Title titletext) = makeRef (BType "Title") titleObj
@@ -117,22 +125,22 @@ instance Bokeh AxisWrapper where
         makeRef (BType "LinearAxis") axisObj
 
 instance Bokeh DataSource where
-    serializeNode cds = do
-        selected_ <- serializeNode (selected cds)
-        selectionPolicy_ <- serializeNode (selectionPolicy cds)
+    serializeNode CDS{..} = do
+        selected_ <- serializeNode selected
+        selectionPolicy_ <- serializeNode selectionPolicy
         let cdsObj = [("callback", Null), ("data", dataObj), 
                 ("selected", selected_), ("selection_policy", selectionPolicy_)]
         makeRef (BType "ColumnDataSource") cdsObj
         where toObj (Field ftext, nums) = (ftext, toJSON nums)
-              dataObj = (Object . fromList) $ toObj <$> cols cds
+              dataObj = (Object . fromList) $ toObj <$> cols
 
 instance Bokeh GlyphRenderer where
-    serializeNode gr = do
-        hover_glyph_ <- serializeNode (hoverGlyph gr)
-        muted_glyph_ <- serializeNode (mutedGlyph gr)
-        data_source_ <- serializeNode (dataSource gr)
-        glyph_ <- serializeNode (glyph gr)
-        view_ <- serializeNode (VWrap data_source_ (vie gr))
+    serializeNode GlyphRenderer{..} = do
+        hover_glyph_ <- serializeNode hoverGlyph
+        muted_glyph_ <- serializeNode mutedGlyph
+        data_source_ <- serializeNode dataSource
+        glyph_ <- serializeNode glyph 
+        view_ <- serializeNode (VWrap data_source_ vie)
         let grObj = [("hover_glyph", hover_glyph_), ("muted_glyph", muted_glyph_),
                 ("data_source", data_source_), ("glyph", glyph_), ("view", view_)]
         makeRef (BType "GlyphRenderer") grObj
@@ -152,8 +160,8 @@ instance Bokeh Formatter where
     serializeNode BasicTickFormatter = makeRef (BType "BasicTickFormatter") []
 
 instance Bokeh Range where
-    serializeNode range = makeRef (BType "Range1d") 
-        [("callback", Null), ("start", toJSON (start range)), ("end", toJSON (end range))]
+    serializeNode Range1d{..} = makeRef (BType "Range1d") 
+        [("callback", Null), ("start", toJSON start), ("end", toJSON end)]
 
 instance Bokeh SelectionPolicy where
     serializeNode UnionRenderers = makeRef (BType "UnionRenderers") []
@@ -164,31 +172,33 @@ instance Bokeh Selection where
     serializeNode _ = undefined -- FIXME
 
 instance Bokeh Glyph where
-    serializeNode (Line color x y) = makeRef (BType "Line") [("line_color", makePrim color), 
-        ("x", l2o [("field", toJSON x)]),("y", l2o [("field", toJSON y)])]
+    serializeNode (Line config x y) = makeRef (BType "Line") $
+        [ ("x", l2o [("field", toJSON x)])
+        , ("y", l2o [("field", toJSON y)])
+        ] ++ mkConfig config
 
 instance Bokeh Toolbar where
-    serializeNode bar = do
-        active_drag_ <- serializeNode (activeDrag bar)
-        active_inspect_ <- serializeNode (activeInspect bar)
-        active_scroll_ <- serializeNode (activeScroll bar)
-        active_tap_ <- serializeNode (activeTap bar)
+    serializeNode Toolbar{..} = do
+        active_drag_ <- serializeNode activeDrag
+        active_inspect_ <- serializeNode activeInspect
+        active_scroll_ <- serializeNode activeScroll
+        active_tap_ <- serializeNode activeTap
         let barObj = [("active_drag", active_drag_), ("active_scroll", active_scroll_),
                 ("active_inspect", active_inspect_), ("active_tap", active_tap_)]
         makeRef (BType "Toolbar") barObj
 
 serializePlot :: Plot -> State SerialEnv (BID, Value)
-serializePlot plt@Plot{height = plot_height, width = plot_width} = do
+serializePlot Plot{..} = do
         let curID = BID "plot_id"
         let footer = l2o [(pack "id", toJSON curID), (pack "type", toJSON $ BType"Plot")]
-        background_fill_ <- serializeNode (backgroundFill plt)
-        title_ <- serializeNode (title plt)
-        toolbar_ <- serializeNode (toolbar plt)
-        x_range_ <- serializeNode (xRange plt)
-        y_range_ <- serializeNode (yRange plt)
-        x_scale_ <- serializeNode (xScale plt)
-        y_scale_ <- serializeNode (yScale plt) 
-        renderers_ <- mapM (serializeRend footer) (renderers plt)
+        background_fill_ <- serializeNode backgroundFill 
+        title_ <- serializeNode title 
+        toolbar_ <- serializeNode toolbar 
+        x_range_ <- serializeNode xRange 
+        y_range_ <- serializeNode yRange 
+        x_scale_ <- serializeNode xScale 
+        y_scale_ <- serializeNode yScale  
+        renderers_ <- mapM (serializeRend footer) renderers 
         let lefts = (toJSON . map snd) $ filter (dPred BLeft) renderers_
             rights = (toJSON . map snd) $ filter (dPred BRight) renderers_
             aboves = (toJSON . map snd) $ filter (dPred BAbove) renderers_
@@ -196,8 +206,8 @@ serializePlot plt@Plot{height = plot_height, width = plot_width} = do
             plotAttrs = l2o [
                 ("background_fill_color", l2o [("value", background_fill_)]),
                 ("title", title_),
-                ("plot_height", toJSON plot_height),
-                ("plot_width", toJSON plot_width),
+                ("plot_height", toJSON height),
+                ("plot_width", toJSON width),
                 ("below", belows),
                 ("above", aboves),
                 ("right", rights),
@@ -248,53 +258,4 @@ emitPlotHTML plot = do
     template <- BS.readFile file
     let [bef, aft] = CS.split '$' template
     return $ bef `mappend` (encode . makeBokeh) plot `mappend` aft
-
-defaultToolbar :: Toolbar
-defaultToolbar = Toolbar Auto Auto Auto Auto
-
-samplesrc :: DataSource
-samplesrc = CDS {
-        cols = [(Field "x", xcols), (Field "y", ycols)],
-        selected = Selection,
-        selectionPolicy = UnionRenderers
-    } where xcols = [-0.5,
-                     1.8333333333333335,
-                     4.166666666666667,
-                     6.5,
-                     8.833333333333334,
-                     11.166666666666668,
-                     13.5,
-                     15.833333333333336,
-                     18.166666666666668,
-                     20.5]
-            ycols = [2.75,
-                     3.916666666666667,
-                     5.083333333333334,
-                     6.25,
-                     7.416666666666667,
-                     8.583333333333334,
-                     9.75,
-                     10.916666666666668,
-                     12.083333333333334,
-                     13.25] 
-
-defaultPlot :: Plot
-defaultPlot = Plot{
-       backgroundFill = Lavender,
-       width = 400,
-       height = 400,
-       renderers = [xaxis, yaxis, lrend],
-       title = Title "Sample bokeh-hs plot",
-       toolbar = defaultToolbar,
-       xRange = Range1d (-0.5) 20,
-       yRange = Range1d (-0.5) 20,
-       xScale = LinearScale,
-       yScale = LinearScale
-    } where
-        xaxis = ARend BBelow ax
-        yaxis = ARend BLeft ax
-        ax = LinearAxis{formatter=BasicTickFormatter, ticker=BasicTicker}
-        lrend = GRend GlyphRenderer { hoverGlyph = Nothing, mutedGlyph = Nothing,
-        dataSource = samplesrc, glyph = lin, vie = CDSView}
-        lin = Line Purple (Field "x") (Field "y")
 
