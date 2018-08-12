@@ -1,8 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE GADTs #-}
 
 module Graphics.BokeHS.Helpers(
-    (|>),
-    ($>),
+    (%>),
     addLine,
     addLinearAxis,
     defaultToolbar,
@@ -12,33 +14,39 @@ module Graphics.BokeHS.Helpers(
 import Graphics.BokeHS.Models
 import Graphics.BokeHS.Prim
 import Graphics.BokeHS.GlyphConfig
+import Graphics.BokeHS.CDS
 
 import Data.Foldable
 import Data.Colour.Names
+import GHC.TypeLits
 
-(|>) :: (a -> b) -> (b -> c) -> a -> c
-(|>) = flip (.)
-
-($>) :: a -> (a -> b) -> b
-($>) = flip ($)
-infixr 0 $>
+-- | Flipped ($). Same as (&) from @Control.Lens@
+(%>) :: a -> (a -> b) -> b
+x %> f = f x
+{-# INLINE (%>) #-}
+infixl 1 %>
 
 --sample glyph adder function
 --r is a row type from which the data can be extracted
-addLine :: Foldable t => t r -> (r -> BNum) -> (r -> BNum) -> LineConfig -> Plot -> Plot
-addLine points getx gety config plt@Plot{renderers = rends} = 
+addLine :: 
+    ( Foldable t
+    , HasColumn r f1 BNum
+    , HasColumn r f2 BNum
+    , KnownSymbol f1
+    , KnownSymbol f2
+    )
+    => t r -> Key f1 -> Key f2 -> LineConfig -> Plot -> Plot
+addLine points k1 k2 config plt@Plot{renderers = rends} = 
     plt{renderers = lrend : rends} 
         where
             lrend = GRend GlyphRenderer { hoverGlyph = Nothing, mutedGlyph = Nothing,
                 dataSource = src, glyph = lin, vie = CDSView}
-            lin = Line config (Field "x") (Field "y")
+            lin = Line config k1 k2
             src = CDS {
-                cols = [(Field "x", xs), (Field "y", ys)],
+                rows = toList points,
                 selected = Selection,
                 selectionPolicy = UnionRenderers
             }
-            xs = getx <$> foldr' (:) [] points
-            ys = gety <$> foldr' (:) [] points
 
 --sample layout adder function
 addLinearAxis :: Direction -> Plot -> Plot
